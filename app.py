@@ -1,403 +1,194 @@
-import streamlit as st
+target_year = st.sidebar.slider(
+"""FastAPI server for groundwater predictions.
+
+This app provides a small HTTP API that finds the nearest monitoring well
+and returns a simple prediction (linear trend on yearly averages or latest value).
+
+Endpoints:
+- GET /            : simple HTML instructions
+- GET /health      : readiness
+- POST /predict    : JSON {latitude, longitude, target_year?}
+
+To run locally for development:
+    pip install fastapi uvicorn scikit-learn pandas numpy
+    uvicorn app:app --host 0.0.0.0 --port 8000
+"""
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsRegressor
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, LSTM, Dense, Dropout
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import seaborn as sns
-import warnings
+from typing import Optional
 import os
-warnings.filterwarnings('ignore')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Page configuration
-st.set_page_config(
-    page_title="Groundwater Level Prediction",
-    page_icon="💧",
-    layout="wide",
-    initial_sidebar_state="expanded"
+app = FastAPI(title="Groundwater Level Prediction API")
+
+# Allow CORS for testing and simple frontend hosting
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Enhanced Custom CSS
-st.markdown("""
-    <style>
-    /* Main styling */
-    .main {
-        padding: 2rem;
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-    }
-    
-    /* Header styling */
-    h1 {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 3rem !important;
-        font-weight: 800 !important;
-        text-align: center;
-        margin-bottom: 1rem;
-        letter-spacing: 0.5px;
-    }
-    
-    h2 {
-        color: #2c3e50;
-        font-weight: 700;
-        border-bottom: 3px solid #667eea;
-        padding-bottom: 10px;
-        margin-top: 2rem;
-    }
-    
-    h3 {
-        color: #667eea;
-        font-weight: 600;
-    }
-    
-    /* Metric cards */
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 25px;
-        border-radius: 15px;
-        color: white;
-        text-align: center;
-        box-shadow: 0 8px 16px rgba(102, 126, 234, 0.3);
-        transition: transform 0.3s, box-shadow 0.3s;
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 12px 24px rgba(102, 126, 234, 0.5);
-    }
-    
-    /* Info boxes */
-    .info-box {
-        background: linear-gradient(135deg, #e0f2f7 0%, #e8f5ff 100%);
-        border-left: 5px solid #667eea;
-        padding: 20px;
-        border-radius: 8px;
-        margin: 15px 0;
-    }
-    
-    /* Success message */
-    .success-message {
-        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-        color: white;
-        padding: 15px;
-        border-radius: 10px;
-        font-weight: 600;
-        text-align: center;
-    }
-    
-    /* Sidebar styling */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    .sidebar-content {
-        color: white;
-    }
-    
-    /* Input styling */
-    input[type="number"], input[type="text"] {
-        border: 2px solid #667eea !important;
-        border-radius: 8px !important;
-        padding: 10px !important;
-    }
-    
-    input[type="number"]:focus, input[type="text"]:focus {
-        border-color: #764ba2 !important;
-        box-shadow: 0 0 10px rgba(102, 126, 234, 0.3) !important;
-    }
-    
-    /* Button styling */
-    .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 12px 30px;
-        font-weight: 600;
-        font-size: 16px;
-        transition: all 0.3s;
-        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
-        width: 100%;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(102, 126, 234, 0.5);
-    }
-    
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: linear-gradient(135deg, #e0f2f7 0%, #e8f5ff 100%);
-        border-radius: 8px;
-        color: #667eea;
-        font-weight: 600;
-        padding: 12px 20px;
-    }
-    
-    .stTabs [aria-selected="true"] [data-baseweb="tab"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-    }
-    
-    /* Download button */
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        font-weight: 600;
-        width: 100%;
-    }
-    
-    .stDownloadButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(132, 250, 176, 0.4);
-    }
-    
-    /* Markdown text styling */
-    p {
-        font-size: 16px;
-        color: #2c3e50;
-        line-height: 1.6;
-    }
-    
-    /* Code styling */
-    code {
-        background: #f5f5f5;
-        padding: 2px 6px;
-        border-radius: 4px;
-        color: #c7254e;
-        font-weight: 500;
-    }
-    
-    /* Metric value styling */
-    .metric-value {
-        font-size: 28px;
-        font-weight: 800;
-        color: white;
-    }
-    
-    .metric-label {
-        font-size: 12px;
-        opacity: 0.9;
-        margin-top: 5px;
-    }
-    
-    /* Badge styling */
-    .badge {
-        display: inline-block;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-        margin: 5px;
-    }
-    
-    .badge-success {
-        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-    }
-    
-    .badge-warning {
-        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-    }
-    
-    /* Table styling */
-    table {
-        border-collapse: collapse;
-        width: 100%;
-        margin: 15px 0;
-    }
-    
-    table th {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 12px;
-        text-align: left;
-        font-weight: 600;
-    }
-    
-    table td {
-        padding: 10px 12px;
-        border-bottom: 1px solid #e0e0e0;
-    }
-    
-    table tr:hover {
-        background: #f5f7fa;
-    }
-    
-    /* Divider */
-    hr {
-        border: none;
-        height: 2px;
-        background: linear-gradient(90deg, transparent, #667eea, transparent);
-        margin: 2rem 0;
-    }
-    
-    /* Section divider */
-    .section-divider {
-        height: 2px;
-        background: linear-gradient(90deg, #667eea, #764ba2);
-        margin: 30px 0;
-        border-radius: 2px;
-    }
-    
-    /* Loading animation */
-    .loading {
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #667eea;
-        margin: 0 3px;
-        animation: bounce 1.4s infinite ease-in-out both;
-    }
-    
-    @keyframes bounce {
-        0%, 80%, 100% {
-            opacity: 0.3;
-            transform: scale(0);
-        }
-        40% {
-            opacity: 1;
-            transform: scale(1);
-        }
-    }
-    
-    /* Card style */
-    .card {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        margin: 15px 0;
-        border-left: 4px solid #667eea;
-    }
-    
-    .card:hover {
-        box-shadow: 0 6px 16px rgba(102, 126, 234, 0.2);
-    }
-    
-    /* Label styling */
-    label {
-        color: #667eea;
-        font-weight: 600;
-        font-size: 14px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# Global containers populated on startup
+DATA = {
+    "df_cgwb": None,
+    "df_rainfall": None,
+    "knn_model": None,
+    "df_long": None,
+}
 
-# Title and Description
-st.markdown("<h1>💧 Groundwater Level Prediction System</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; font-size: 18px; color: #667eea; font-weight: 600;'> Predictions Using LSTM+CNN with Rainfall Integration</p>", unsafe_allow_html=True)
-st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
 
-# Sidebar Configuration
-st.sidebar.header("⚙️ Configuration")
-st.sidebar.markdown("---")
+class PredictRequest(BaseModel):
+    latitude: float
+    longitude: float
+    target_year: Optional[int] = None
 
-# Load data (cached)
-@st.cache_resource
-def load_data():
+
+@app.on_event("startup")
+def load_data_and_models():
+    """Load CSVs and build a simple KNN spatial model used for nearest-well lookup."""
+    base = os.getcwd()
     try:
-        df_cgwb = pd.read_csv('CGWB_data_main_cleaned.csv')
-        df_rainfall = pd.read_csv('district wise rainfall normal.csv')
-        return df_cgwb, df_rainfall
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        return None, None
-
-@st.cache_resource
-def create_knn_model(df_cgwb):
-    id_vars = ['STATE', 'DISTRICT', 'LAT', 'LON', 'SITE_TYPE', 'WLCODE']
-    df_long = pd.melt(df_cgwb, id_vars=id_vars, var_name='Date', value_name='Water_Level')
-    df_long['Date'] = pd.to_datetime(df_long['Date'], errors='coerce')
-    df_long.dropna(subset=['Water_Level', 'LAT', 'LON', 'Date'], inplace=True)
-    
-    df_recent = df_long.loc[df_long.groupby('WLCODE')['Date'].idxmax()]
-    X = df_recent[['LAT', 'LON']]
-    y = df_recent['Water_Level']
-    
-    knn_model = KNeighborsRegressor(n_neighbors=5, weights='distance')
-    knn_model.fit(X, y)
-    
-    return knn_model, df_long
-
-# Load data
-df_cgwb, df_rainfall = load_data()
-
-if df_cgwb is None or df_rainfall is None:
-    st.error("Could not load data files. Please ensure CGWB_data_main_cleaned.csv and district wise rainfall normal.csv are in the same directory.")
-    st.stop()
-
-knn_model, df_long = create_knn_model(df_cgwb)
-
-# Input Parameters
-col1, col2 = st.sidebar.columns(2)
-
-with col1:
-    latitude = st.number_input(
-        "Latitude",
-        min_value=8.0,
-        max_value=35.0,
-        value=28.5355,
-        step=0.01,
-        help="Enter latitude (8-35°N)"
-    )
-
-with col2:
-    longitude = st.number_input(
-        "Longitude",
-        min_value=68.0,
-        max_value=97.0,
-        value=77.3910,
-        step=0.01,
-        help="Enter longitude (68-97°E)"
-    )
-
-district = st.sidebar.text_input(
-    "District Name (Optional)",
-    value="",
-    help="Leave blank for auto-detection"
-)
-
-target_year = st.sidebar.slider(
-    "Target Prediction Year",
-    min_value=2025,
-    max_value=2050,
-    value=2035,
-    step=1
-)
-
-# Run Prediction Button
-if st.sidebar.button("🚀 Run Prediction", key="predict_btn"):
-    
-    with st.spinner("🔄 Processing... This may take 1-2 minutes"):
+        df_cgwb = pd.read_csv(os.path.join(base, "CGWB_data_main_cleaned.csv"))
+        df_rainfall = pd.read_csv(os.path.join(base, "district wise rainfall normal.csv"))
+    except FileNotFoundError:
+        # Try without base path — user may run app from repo root
         try:
-            # Find nearest well
-            closest_wells = df_long.drop_duplicates(subset=['WLCODE'])
-            distances = np.sqrt((closest_wells['LAT'] - latitude)**2 + (closest_wells['LON'] - longitude)**2)
-            nearest_idx = distances.idxmin()
-            well_id = closest_wells.loc[nearest_idx, 'WLCODE']
-            pred_district = closest_wells.loc[nearest_idx, 'DISTRICT']
-            state = closest_wells.loc[nearest_idx, 'STATE']
-            
-            # Get yearly data
-            well_data = df_long[df_long['WLCODE'] == well_id].copy()
-            well_data['Year'] = well_data['Date'].dt.year
-            yearly_avg = well_data.groupby('Year')['Water_Level'].mean().sort_index()
+            df_cgwb = pd.read_csv("CGWB_data_main_cleaned.csv")
+            df_rainfall = pd.read_csv("district wise rainfall normal.csv")
+        except Exception:
+            df_cgwb = None
+            df_rainfall = None
+
+    DATA["df_cgwb"] = df_cgwb
+    DATA["df_rainfall"] = df_rainfall
+
+    if df_cgwb is None:
+        return
+
+    id_vars = [c for c in ["STATE", "DISTRICT", "LAT", "LON", "SITE_TYPE", "WLCODE"] if c in df_cgwb.columns]
+    df_long = pd.melt(df_cgwb, id_vars=id_vars, var_name="Date", value_name="Water_Level")
+    df_long["Date"] = pd.to_datetime(df_long["Date"], errors="coerce")
+    df_long.dropna(subset=["Water_Level", "LAT", "LON", "Date"], inplace=True)
+
+    recent = df_long.loc[df_long.groupby("WLCODE")["Date"].idxmax()]
+    X = recent[["LAT", "LON"]]
+    y = recent["Water_Level"]
+    knn = KNeighborsRegressor(n_neighbors=5, weights="distance")
+    knn.fit(X, y)
+
+    DATA["knn_model"] = knn
+    DATA["df_long"] = df_long
+
+
+@app.get("/", response_class=HTMLResponse)
+def homepage():
+    html = """
+    <html>
+      <head>
+        <title>Groundwater Prediction API</title>
+        <meta charset="utf-8" />
+      </head>
+      <body style="font-family: Arial; max-width:800px; margin:2rem auto;">
+        <h1>Groundwater Level Prediction API</h1>
+        <p>Use the <code>/predict</code> POST endpoint to get a prediction. Example payload:</p>
+        <pre>{"latitude":28.53, "longitude":77.39, "target_year":2035}</pre>
+        <p>Or call the endpoint from your app. Response is JSON.</p>
+      </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+def predict_by_nearest_well(lat: float, lon: float, target_year: Optional[int] = None):
+    df_long = DATA.get("df_long")
+    knn = DATA.get("knn_model")
+    if df_long is None or knn is None:
+        raise HTTPException(status_code=500, detail="Data or model not loaded on server")
+
+    # Find nearest well using recent locations
+    recent = df_long.loc[df_long.groupby("WLCODE")["Date"].idxmax()].drop_duplicates(subset=["WLCODE"]) 
+    # compute euclidean distance (not geodesic) — acceptable for local scale
+    distances = np.sqrt((recent["LAT"] - lat) ** 2 + (recent["LON"] - lon) ** 2)
+    idx = distances.idxmin()
+    well = recent.loc[idx]
+    well_id = well["WLCODE"] if "WLCODE" in well else None
+    district = well.get("DISTRICT", None)
+    state = well.get("STATE", None)
+
+    # build yearly series for the well
+    well_data = df_long[df_long["WLCODE"] == well_id].copy()
+    well_data["Year"] = well_data["Date"].dt.year
+    yearly = well_data.groupby("Year")["Water_Level"].mean().dropna().sort_index()
+
+    if yearly.empty:
+        raise HTTPException(status_code=404, detail="No water-level history found for nearest well")
+
+    years = yearly.index.to_numpy()
+    values = yearly.to_numpy()
+
+    if target_year is None:
+        # default: return latest available year
+        return {
+            "well_id": well_id,
+            "district": district,
+            "state": state,
+            "predicted_year": int(years[-1]),
+            "predicted_value": float(values[-1]),
+            "method": "latest"
+        }
+
+    # if we have at least two points, fit linear trend on yearly averages
+    if len(years) >= 2:
+        coef = np.polyfit(years, values, 1)
+        slope, intercept = coef[0], coef[1]
+        pred = float(slope * target_year + intercept)
+        return {
+            "well_id": well_id,
+            "district": district,
+            "state": state,
+            "predicted_year": int(target_year),
+            "predicted_value": pred,
+            "method": "linear_trend",
+            "trend_slope_per_year": float(slope),
+            "trend_intercept": float(intercept),
+            "baseline_years": years.tolist(),
+            "baseline_values": values.tolist()
+        }
+    else:
+        # fallback to latest
+        return {
+            "well_id": well_id,
+            "district": district,
+            "state": state,
+            "predicted_year": int(years[-1]),
+            "predicted_value": float(values[-1]),
+            "method": "latest"
+        }
+
+
+@app.post("/predict")
+def predict(req: PredictRequest):
+    try:
+        result = predict_by_nearest_well(req.latitude, req.longitude, req.target_year)
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/health")
+def health():
+    ok = DATA.get("df_cgwb") is not None and DATA.get("knn_model") is not None
+    return {"status": "ok" if ok else "loading"}
+
             
             # Get rainfall
             district_str = str(pred_district).lower().strip()
