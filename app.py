@@ -1,8 +1,11 @@
 """
-Groundwater Prediction API (Final Stable Version)
+Groundwater Prediction API (FINAL STABLE VERSION)
 
-Run:
+Run locally:
     uvicorn app:app --reload
+
+Deploy (Render):
+    gunicorn -k uvicorn.workers.UvicornWorker app:app
 """
 
 from fastapi import FastAPI, HTTPException
@@ -15,7 +18,7 @@ from typing import Optional
 
 app = FastAPI(title="Groundwater Prediction API")
 
-# Enable CORS
+# Enable CORS (frontend access)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,14 +27,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global data
-DATA = {"df_long": None}
+# Global storage
+DATA = {
+    "df_long": None
+}
 
-
-# ------------------ REQUEST MODEL ------------------ #
+# Request schema
 class PredictRequest(BaseModel):
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    latitude: float
+    longitude: float
     district: Optional[str] = None
     target_year: Optional[int] = None
 
@@ -46,20 +50,23 @@ def load_data():
         print("❌ Dataset loading failed:", e)
         return
 
-    # Required columns check
+    # Ensure required columns
     if "LAT" not in df.columns or "LON" not in df.columns:
-        raise Exception("Missing LAT/LON columns")
+        raise Exception("Dataset must contain LAT and LON columns")
 
+    # Create fallback well ID
     if "WLCODE" not in df.columns:
         df["WLCODE"] = df.index.astype(str)
 
     id_vars = [c for c in ["STATE", "DISTRICT", "LAT", "LON", "WLCODE"] if c in df.columns]
 
-    # Convert wide → long
+    # Convert to long format
     df_long = pd.melt(df, id_vars=id_vars, var_name="Date", value_name="Water_Level")
 
-    # Convert types safely
+    # Convert date safely
     df_long["Date"] = pd.to_datetime(df_long["Date"], errors="coerce", dayfirst=True)
+
+    # Convert water level to numeric (CRITICAL FIX)
     df_long["Water_Level"] = pd.to_numeric(df_long["Water_Level"], errors="coerce")
 
     # Drop invalid rows
@@ -69,7 +76,7 @@ def load_data():
         raise Exception("Dataset empty after cleaning")
 
     DATA["df_long"] = df_long
-    print("✅ Data prepared successfully")
+    print("✅ Data preprocessing complete")
 
 
 # ------------------ HOME ------------------ #
@@ -77,120 +84,93 @@ def load_data():
 def home():
     return """
     <h2>Groundwater Prediction API</h2>
-    <p>POST /predict with:</p>
+    <p>Use POST /predict</p>
     <pre>{
+      "latitude": 28.53,
+      "longitude": 77.39,
       "district": "Ghaziabad",
-      "target_year": 2035
+      "target_year": 2040
     }</pre>
     """
 
 
-# ------------------ CORE PREDICTION ------------------ #
-def generate_prediction(years, values, target_year):
-    # Convert to numpy
-    years = np.array(years)
-    values = np.array(values)
+# ------------------ PREDICTION LOGIC ------------------ #
+def predict_logic(lat, lon, district=None, target_year=None):
+    df_long = DATA.get("df_long")
 
-    # Force numeric
-    try:
-        years = years.astype(float)
-        values = values.astype(float)
-    except:
-        raise HTTPException(status_code=500, detail="Non-numeric data found")
+    if df_long is None:
+        raise HTTPException(status_code=500, detail="Data not loaded")
 
-    # Remove NaN
-    mask = ~np.isnan(years) & ~np.isnan(values)
-    years = years[mask]
-    values = values[mask]
+    # Filter by district if provided
+    if district and "DISTRICT" in df_long.columns:
+        df_filtered = df_long[df_long["DISTRICT"].str.lower() == district.lower()]
+        if not df_filtered.empty:
+            df_long = df_filtered
 
-    if len(years) == 0:
-        raise HTTPException(status_code=500, detail="No valid data")
+    # Latest records per well
+    recent = df_long.loc[df_long.groupby("WLCODE")["Date"].idxmax()]
 
-    last_year = int(years[-1])
+    if recent.empty:
+        raise HTTPException(status_code=404, detail="No wells found")
 
-    # If no target year → latest
-    if target_year is None:
-        return {
-            "predicted_year": last_year,
-            "predicted_value": float(values[-1]),
-            "method": "latest"
-        }
-
-    if target_year <= last_year:
-        raise HTTPException(status_code=400, detail="Target year must be future")
-
-    # Linear trend prediction
-    if len(years) >= 2:
-        slope, intercept = np.polyfit(years, values, 1)
-
-        future_years = list(range(last_year + 1, target_year + 1))
-        future_preds = [float(slope * y + intercept) for y in future_years]
-
-        return {
-            "base_last_year": last_year,
-            "target_year": target_year,
-            "method": "linear_trend",
-            "predictions": [
-                {"year": y, "predicted_value": v}
-                for y, v in zip(future_years, future_preds)
-            ]
-        }
-
-    # Fallback
-    return {
-        "predicted_year": last_year,
-        "predicted_value": float(values[-1]),
-        "method": "fallback"
-    }
-
-
-# ------------------ LOCATION PREDICTION ------------------ #
-def predict_by_location(lat, lon, target_year):
-    df = DATA["df_long"]
-
-    recent = df.loc[df.groupby("WLCODE")["Date"].idxmax()]
-
+    # Find nearest well
     distances = np.sqrt((recent["LAT"] - lat)**2 + (recent["LON"] - lon)**2)
     idx = distances.idxmin()
 
     well = recent.loc[idx]
     well_id = well["WLCODE"]
-    district = well.get("DISTRICT", None)
+    district_name = well.get("DISTRICT", "Unknown")
+    state_name = well.get("STATE", "Unknown")
 
-    well_data = df[df["WLCODE"] == well_id].copy()
+    # Historical data
+    well_data = df_long[df_long["WLCODE"] == well_id].copy()
     well_data["Year"] = well_data["Date"].dt.year
 
     yearly = well_data.groupby("Year")["Water_Level"].mean().dropna()
 
-    result = generate_prediction(yearly.index, yearly.values, target_year)
+    if yearly.empty:
+        raise HTTPException(status_code=404, detail="No historical data")
 
+    # 🔥 CRITICAL FIX (numeric conversion)
+    years = yearly.index.values.astype(float)
+    values = yearly.values.astype(float)
+
+    # Latest value if no target
+    if target_year is None:
+        return {
+            "well_id": str(well_id),
+            "district": str(district_name),
+            "state": str(state_name),
+            "predicted_year": int(years[-1]),
+            "predicted_value": float(values[-1]),
+            "method": "latest"
+        }
+
+    # Linear prediction
+    if len(years) >= 2:
+        try:
+            slope, intercept = np.polyfit(years, values, 1)
+            pred = slope * target_year + intercept
+        except Exception:
+            pred = values[-1]
+
+        return {
+            "well_id": str(well_id),
+            "district": str(district_name),
+            "state": str(state_name),
+            "predicted_year": int(target_year),
+            "predicted_value": float(pred),
+            "method": "linear_trend"
+        }
+
+    # Fallback
     return {
-        "type": "location",
         "well_id": str(well_id),
-        "district": district,
-        **result
-    }
-
-
-# ------------------ DISTRICT PREDICTION ------------------ #
-def predict_by_district(district_name, target_year):
-    df = DATA["df_long"]
-
-    df_district = df[df["DISTRICT"].str.lower() == district_name.lower()]
-
-    if df_district.empty:
-        raise HTTPException(status_code=404, detail="District not found")
-
-    df_district["Year"] = df_district["Date"].dt.year
-
-    yearly = df_district.groupby("Year")["Water_Level"].mean().dropna()
-
-    result = generate_prediction(yearly.index, yearly.values, target_year)
-
-    return {
-        "type": "district",
-        "district": district_name,
-        **result
+        "district": str(district_name),
+        "state": str(state_name),
+        "predicted_year": int(years[-1]),
+        "predicted_value": float(values[-1]),
+        "method": "fallback"
     }
 
 
@@ -198,16 +178,17 @@ def predict_by_district(district_name, target_year):
 @app.post("/predict")
 def predict(req: PredictRequest):
     try:
-        if req.district:
-            return JSONResponse(content=predict_by_district(req.district, req.target_year))
-
-        if req.latitude is not None and req.longitude is not None:
-            return JSONResponse(content=predict_by_location(req.latitude, req.longitude, req.target_year))
-
-        raise HTTPException(status_code=400, detail="Provide district OR latitude/longitude")
+        result = predict_logic(
+            req.latitude,
+            req.longitude,
+            req.district,
+            req.target_year
+        )
+        return JSONResponse(content=result)
 
     except HTTPException:
         raise
+
     except Exception as e:
         print("❌ ERROR:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
