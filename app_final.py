@@ -864,50 +864,63 @@ if st.session_state.current_page == "prediction":
 elif st.session_state.current_page == "analysis":
     st.markdown("<h2>📈 Comprehensive Analysis & Visualizations</h2>", unsafe_allow_html=True)
     
-    if "prediction_result" in st.session_state:
+    if "prediction_result" not in st.session_state or st.session_state.prediction_result is None:
+        st.warning("⚠️ No prediction data available!")
+        st.info("Please go to 🎯 Prediction tab and click the Predict button first.")
+    elif "error" in st.session_state.prediction_result:
+        st.error(f"❌ Prediction Error: {st.session_state.prediction_result['error']}")
+    else:
         result = st.session_state.prediction_result
         
-        # ===== KEY METRICS CARDS =====
-        st.markdown("<h3>📊 Key Analysis Metrics</h3>", unsafe_allow_html=True)
-        metric_cols = st.columns(4)
+        # Validate result has required keys
+        required_keys = ['current_level', 'predicted_level', 'slope', 'last_date', 'model', 'filtered_data']
+        missing_keys = [k for k in required_keys if k not in result]
         
-        with metric_cols[0]:
-            current_level = result['current_level']
-            st.metric("💧 Current Level", f"{current_level:.2f}m", delta=None)
-        
-        with metric_cols[1]:
-            predicted_level = result['predicted_level']
-            change = predicted_level - current_level
-            st.metric("🎯 Predicted Level", f"{predicted_level:.2f}m", delta=f"{change:.2f}m")
-        
-        with metric_cols[2]:
-            pct_change = (change / abs(current_level)) * 100 if current_level != 0 else 0
-            st.metric("📈 % Change", f"{pct_change:.2f}%", delta=None)
-        
-        with metric_cols[3]:
-            slope = result['slope']
-            st.metric("⚡ Slope (m/day)", f"{slope:.6f}", delta=None)
-        
-        st.markdown("---")
-        
-        # ===== MULTIPLE ANALYSIS CHARTS =====
-        st.markdown("<h3>🎨 Prediction Visualizations</h3>", unsafe_allow_html=True)
-        
-        # Generate prediction data for all years
-        years = list(range(int(result['last_date'].year), int(target_year) + 1))
-        current = result['current_level']
-        rainfall_factor = result.get('rainfall_factor', 0)
-        
-        # Calculate predictions using the model
-        trend_values = []
-        for year in years:
-            year_date = datetime(year, 1, 1)
-            days_to_year = (year_date - result['last_date']).days
-            pred = result['model'].predict([[days_to_year]])[0]
-            pred_adjusted = pred * (1 + rainfall_factor * 0.1)
-            trend_values.append(pred_adjusted)
-        
-        change_vals = [v - current for v in trend_values]
+        if missing_keys:
+            st.error(f"❌ Incomplete prediction data. Missing: {missing_keys}")
+            st.info("Please re-run the prediction from the 🎯 Prediction tab.")
+        else:
+            # ===== KEY METRICS CARDS =====
+            st.markdown("<h3>📊 Key Analysis Metrics</h3>", unsafe_allow_html=True)
+            metric_cols = st.columns(4)
+            
+            with metric_cols[0]:
+                current_level = result['current_level']
+                st.metric("💧 Current Level", f"{current_level:.2f}m", delta=None)
+            
+            with metric_cols[1]:
+                predicted_level = result['predicted_level']
+                change = predicted_level - current_level
+                st.metric("🎯 Predicted Level", f"{predicted_level:.2f}m", delta=f"{change:.2f}m")
+            
+            with metric_cols[2]:
+                pct_change = (change / abs(current_level)) * 100 if current_level != 0 else 0
+                st.metric("📈 % Change", f"{pct_change:.2f}%", delta=None)
+            
+            with metric_cols[3]:
+                slope = result['slope']
+                st.metric("⚡ Slope (m/day)", f"{slope:.6f}", delta=None)
+            
+            st.markdown("---")
+            
+            # ===== MULTIPLE ANALYSIS CHARTS =====
+            st.markdown("<h3>🎨 Prediction Visualizations</h3>", unsafe_allow_html=True)
+            
+            # Generate prediction data for all years
+            years = list(range(int(result['last_date'].year), int(target_year) + 1))
+            current = result['current_level']
+            rainfall_factor = result.get('rainfall_factor', 0)
+            
+            # Calculate predictions using the model
+            trend_values = []
+            for year in years:
+                year_date = datetime(year, 1, 1)
+                days_to_year = (year_date - result['last_date']).days
+                pred = result['model'].predict([[days_to_year]])[0]
+                pred_adjusted = pred * (1 + rainfall_factor * 0.1)
+                trend_values.append(pred_adjusted)
+            
+            change_vals = [v - current for v in trend_values]
         
         # Chart 1: Trend Line with Markers
         col1, col2 = st.columns(2)
@@ -1226,10 +1239,6 @@ elif st.session_state.current_page == "analysis":
         
         for insight in insights:
             st.info(insight)
-        
-    else:
-        st.warning("⚠️ Generate a prediction first to see comprehensive analysis")
-        st.info("Go to 🎯 Prediction tab, set your parameters, and click Predict button")
 
 # CHATBOT PAGE
 elif st.session_state.current_page == "chatbot":
