@@ -936,9 +936,18 @@ elif st.session_state.current_page == "analysis":
                 ))
             
             # Projection
-            proj_dates = pd.date_range(result['last_date'], datetime(int(target_year), 1, 1), freq='Y')
-            proj_values = [current + result['slope'] * (d - result['last_date']).days / 1000 
-                          for d in proj_dates]
+            # Safe datetime conversion
+            last_date = pd.to_datetime(result['last_date'], errors='coerce')
+
+            # Generate years manually (no pandas freq issue)
+            years = list(range(last_date.year, int(target_year) + 1))
+
+            proj_dates = [datetime(year, 1, 1) for year in years]
+
+            proj_values = [
+                current + result['slope'] * (d - last_date).days / 1000
+                for d in proj_dates
+            ]
             
             fig_historical.add_trace(go.Scatter(
                 x=proj_dates,
