@@ -407,7 +407,7 @@ def load_data():
             value_name="Water_Level"
         )
         
-        df_long["Date"] = pd.to_datetime(df_long["Date"], errors="coerce")
+        df_long["Date"] = pd.to_datetime(df_long["Date"], format="%Y-%m-%d", errors="coerce")
         df_long["Water_Level"] = pd.to_numeric(df_long["Water_Level"], errors="coerce")
         df_long.dropna(inplace=True)
         df_long["DISTRICT"] = df_long["DISTRICT"].str.upper().str.strip()
@@ -921,7 +921,7 @@ elif st.session_state.current_page == "analysis":
                 ))
             
             # Projection
-            proj_dates = pd.date_range(result['last_date'], datetime(int(target_year), 1, 1), freq='Y')
+            proj_dates = pd.date_range(result['last_date'], datetime(int(target_year), 1, 1), freq='YE')
             proj_values = [current + result['slope'] * (d - result['last_date']).days / 1000 
                           for d in proj_dates]
             
@@ -943,7 +943,7 @@ elif st.session_state.current_page == "analysis":
                 font=dict(color='#0a2540', size=11),
                 height=400
             )
-            st.plotly_chart(fig_historical, use_container_width=True)
+            st.plotly_chart(fig_historical, width='stretch')
         
         with col4:
             # Rainfall Impact Analysis
