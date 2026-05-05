@@ -18,27 +18,6 @@ from streamlit_folium import st_folium
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================= DIAGNOSTIC INFO ================= #
-# Check if files exist on startup
-@st.cache_data
-def check_environment():
-    """Check if required files exist"""
-    current_dir = os.getcwd()
-    gwb_exists = os.path.exists("CGWB_data_main_cleaned.csv")
-    rainfall_exists = os.path.exists("district wise rainfall normal.csv")
-    
-    return {
-        "current_dir": current_dir,
-        "gwb_exists": gwb_exists,
-        "rainfall_exists": rainfall_exists,
-        "all_files": os.listdir(current_dir) if current_dir else []
-    }
-
-env_check = check_environment()
-logger.info(f"Environment check: {env_check['current_dir']}")
-logger.info(f"Groundwater file exists: {env_check['gwb_exists']}")
-logger.info(f"Rainfall file exists: {env_check['rainfall_exists']}")
-
 # ================= PAGE CONFIG ================= #
 st.set_page_config(
     page_title="🌊 Groundwater Prediction System",
@@ -377,149 +356,10 @@ hr {
 </style>
 """, unsafe_allow_html=True)
 
-# ================= LOAD DATA ================= #
-@st.cache_data
-def load_data():
-    """Load groundwater and rainfall data"""
-    try:
-        import os
-        
-        # Get current directory
-        current_dir = os.getcwd()
-        
-        # Check if files exist
-        gwb_file = "CGWB_data_main_cleaned.csv"
-        rainfall_file = "district wise rainfall normal.csv"
-        
-        if not os.path.exists(gwb_file):
-            raise FileNotFoundError(f"❌ File not found: {gwb_file}\nCurrent directory: {current_dir}\nFiles: {os.listdir(current_dir)}")
-        
-        if not os.path.exists(rainfall_file):
-            raise FileNotFoundError(f"❌ File not found: {rainfall_file}")
-        
-        # Load groundwater data
-        df = pd.read_csv(gwb_file)
-        logger.info(f"✅ Groundwater data loaded: {df.shape}")
-        
-        if "WLCODE" not in df.columns:
-            df["WLCODE"] = df.index.astype(str)
-        
-        # Check required columns
-        required_cols = ["STATE", "DISTRICT", "LAT", "LON"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing columns in groundwater data: {missing_cols}")
-        
-        df_long = pd.melt(
-            df,
-            id_vars=["STATE", "DISTRICT", "LAT", "LON", "WLCODE"],
-            var_name="Date",
-            value_name="Water_Level"
-        )
-        
-        df_long["Date"] = pd.to_datetime(df_long["Date"], format="%Y-%m-%d", errors="coerce")
-        df_long["Water_Level"] = pd.to_numeric(df_long["Water_Level"], errors="coerce")
-        df_long.dropna(subset=["Water_Level"], inplace=True)
-        df_long["DISTRICT"] = df_long["DISTRICT"].str.upper().str.strip()
-        
-        logger.info(f"✅ Data melted and processed: {df_long.shape}")
-        logger.info(f"✅ Unique districts: {df_long['DISTRICT'].nunique()}")
-        
-        # Load rainfall data
-        rainfall_df = pd.read_csv(rainfall_file)
-        rainfall_df.columns = rainfall_df.columns.str.strip()
-        
-        if "DISTRICT" in rainfall_df.columns:
-            rainfall_df["DISTRICT"] = rainfall_df["DISTRICT"].str.upper().str.strip()
-        
-        logger.info(f"✅ Rainfall data loaded: {rainfall_df.shape}")
-        
-        return df_long, rainfall_df
-    
-    except Exception as e:
-        logger.error(f"❌ Data loading error: {str(e)}")
-        return None, None
-
-# Load data first
-df_long, rainfall_df = load_data()
-
-# Add debug info to sidebar
-if df_long is None:
-    st.sidebar.error("❌ Failed to load groundwater data!")
-    st.sidebar.error("Please check:")
-    st.sidebar.error("1. CGWB_data_main_cleaned.csv exists")
-    st.sidebar.error("2. district wise rainfall normal.csv exists")
-    st.sidebar.error("3. Files are in the correct directory")
-else:
-    st.sidebar.success(f"✅ Data loaded successfully!")
-    st.sidebar.info(f"📊 Groundwater records: {len(df_long):,}")
-    st.sidebar.info(f"🗺️ Districts found: {df_long['DISTRICT'].nunique()}")
-
-# ================= SIDEBAR INPUTS ================= #
-st.sidebar.markdown("<div class='sidebar-label'>📍 Location Input</div>", unsafe_allow_html=True)
-
-latitude = st.sidebar.number_input(
-    "Latitude",
-    value=28.79,
-    min_value=-90.0,
-    max_value=90.0,
-    step=0.01,
-    help="Geographic latitude"
-)
-
-longitude = st.sidebar.number_input(
-    "Longitude",
-    value=77.39,
-    min_value=-180.0,
-    max_value=180.0,
-    step=0.01,
-    help="Geographic longitude"
-)
-
-st.sidebar.markdown("<div class='sidebar-label'>📊 Prediction Settings</div>", unsafe_allow_html=True)
-
-# Get districts with better error handling
-districts = []
-if df_long is not None and "DISTRICT" in df_long.columns and len(df_long) > 0:
-    try:
-        districts = sorted([d for d in df_long["DISTRICT"].unique() if pd.notna(d) and str(d).strip() != ""])
-        st.sidebar.info(f"✅ Loaded {len(districts)} districts")
-    except Exception as e:
-        st.sidebar.error(f"Error loading districts: {e}")
-        districts = []
-else:
-    st.sidebar.error("❌ No data loaded. Check CSV files in directory.")
-
-# Ensure we have districts before showing selectbox
-if not districts:
-    st.sidebar.warning("⚠️ No districts found. Using sample districts.")
-    districts = ["DELHI", "PUNJAB", "HARYANA", "UTTAR PRADESH", "BIHAR"]
-
-selected_district = st.sidebar.selectbox(
-    "Select District",
-    ["Auto Detect"] + districts,
-    help="Select district for rainfall data"
-)
-
-target_year = st.sidebar.number_input(
-    "Target Year",
-    value=2035,
-    min_value=2025,
-    max_value=2100,
-    step=1,
-    help="Target prediction year"
-)
-
-prediction_scenario = st.sidebar.selectbox(
-    "Climate Scenario",
-    ["Normal", "Optimistic (High Rainfall)", "Pessimistic (Low Rainfall)"],
-    help="Climate scenario for prediction"
-)
-
 # ================= TOP NAVBAR ================= #
 st.markdown("""
 <div class="navbar-container">
-    <div class="navbar-title">🌊 Groundwater Level Prediction </div>
+    <div class="navbar-title">🌊 Groundwater Level Prediction</div>
     <div class="navbar-subtitle">Advanced Water Resource Management System with AI Analytics</div>
 </div>
 """, unsafe_allow_html=True)
@@ -548,6 +388,40 @@ with nav_col4:
         st.session_state.current_page = "about"
 
 st.markdown("---")
+
+# ================= LOAD DATA ================= #
+@st.cache_data
+def load_data():
+    """Load groundwater and rainfall data"""
+    try:
+        df = pd.read_csv("CGWB_data_main_cleaned.csv")
+        logger.info(f"✅ Groundwater data loaded: {df.shape}")
+        
+        if "WLCODE" not in df.columns:
+            df["WLCODE"] = df.index.astype(str)
+        
+        df_long = pd.melt(
+            df,
+            id_vars=["STATE", "DISTRICT", "LAT", "LON", "WLCODE"],
+            var_name="Date",
+            value_name="Water_Level"
+        )
+        
+        df_long["Date"] = pd.to_datetime(df_long["Date"], errors="coerce")
+        df_long["Water_Level"] = pd.to_numeric(df_long["Water_Level"], errors="coerce")
+        df_long.dropna(inplace=True)
+        df_long["DISTRICT"] = df_long["DISTRICT"].str.upper().str.strip()
+        
+        rainfall_df = pd.read_csv("district wise rainfall normal.csv")
+        rainfall_df.columns = rainfall_df.columns.str.strip()
+        rainfall_df["DISTRICT"] = rainfall_df["DISTRICT"].str.upper().str.strip() if "DISTRICT" in rainfall_df.columns else None
+        
+        return df_long, rainfall_df
+    
+    except Exception as e:
+        logger.error(f"❌ Data loading error: {e}")
+        st.error(f"Data loading failed: {e}")
+        return None, None
 
 # ================= PREDICTION FUNCTION ================= #
 def predict_with_rainfall(lat, lon, district, target_year, rainfall_df):
@@ -604,6 +478,53 @@ def predict_with_rainfall(lat, lon, district, target_year, rainfall_df):
         "filtered_data": filtered_data,
         "target_year": target_year
     }
+
+# ================= SIDEBAR INPUTS ================= #
+st.sidebar.markdown("<div class='sidebar-label'>📍 Location Input</div>", unsafe_allow_html=True)
+
+latitude = st.sidebar.number_input(
+    "Latitude",
+    value=28.79,
+    min_value=-90.0,
+    max_value=90.0,
+    step=0.01,
+    help="Geographic latitude"
+)
+
+longitude = st.sidebar.number_input(
+    "Longitude",
+    value=77.39,
+    min_value=-180.0,
+    max_value=180.0,
+    step=0.01,
+    help="Geographic longitude"
+)
+
+st.sidebar.markdown("<div class='sidebar-label'>📊 Prediction Settings</div>", unsafe_allow_html=True)
+
+df_long, rainfall_df = load_data()
+districts = sorted([d for d in df_long["DISTRICT"].unique() if pd.notna(d)]) if df_long is not None else []
+
+selected_district = st.sidebar.selectbox(
+    "Select District",
+    ["Auto Detect"] + districts,
+    help="Select district for rainfall data"
+)
+
+target_year = st.sidebar.number_input(
+    "Target Year",
+    value=2035,
+    min_value=2025,
+    max_value=2100,
+    step=1,
+    help="Target prediction year"
+)
+
+prediction_scenario = st.sidebar.selectbox(
+    "Scenario",
+    ["Normal", "Optimistic (High Rainfall)", "Pessimistic (Low Rainfall)"],
+    help="Climate scenario"
+)
 
 # Auto-generate prediction
 district_for_rainfall = None if selected_district == "Auto Detect" else selected_district
@@ -864,63 +785,50 @@ if st.session_state.current_page == "prediction":
 elif st.session_state.current_page == "analysis":
     st.markdown("<h2>📈 Comprehensive Analysis & Visualizations</h2>", unsafe_allow_html=True)
     
-    if "prediction_result" not in st.session_state or st.session_state.prediction_result is None:
-        st.warning("⚠️ No prediction data available!")
-        st.info("Please go to 🎯 Prediction tab and click the Predict button first.")
-    elif "error" in st.session_state.prediction_result:
-        st.error(f"❌ Prediction Error: {st.session_state.prediction_result['error']}")
-    else:
+    if "prediction_result" in st.session_state:
         result = st.session_state.prediction_result
         
-        # Validate result has required keys
-        required_keys = ['current_level', 'predicted_level', 'slope', 'last_date', 'model', 'filtered_data']
-        missing_keys = [k for k in required_keys if k not in result]
+        # ===== KEY METRICS CARDS =====
+        st.markdown("<h3>📊 Key Analysis Metrics</h3>", unsafe_allow_html=True)
+        metric_cols = st.columns(4)
         
-        if missing_keys:
-            st.error(f"❌ Incomplete prediction data. Missing: {missing_keys}")
-            st.info("Please re-run the prediction from the 🎯 Prediction tab.")
-        else:
-            # ===== KEY METRICS CARDS =====
-            st.markdown("<h3>📊 Key Analysis Metrics</h3>", unsafe_allow_html=True)
-            metric_cols = st.columns(4)
-            
-            with metric_cols[0]:
-                current_level = result['current_level']
-                st.metric("💧 Current Level", f"{current_level:.2f}m", delta=None)
-            
-            with metric_cols[1]:
-                predicted_level = result['predicted_level']
-                change = predicted_level - current_level
-                st.metric("🎯 Predicted Level", f"{predicted_level:.2f}m", delta=f"{change:.2f}m")
-            
-            with metric_cols[2]:
-                pct_change = (change / abs(current_level)) * 100 if current_level != 0 else 0
-                st.metric("📈 % Change", f"{pct_change:.2f}%", delta=None)
-            
-            with metric_cols[3]:
-                slope = result['slope']
-                st.metric("⚡ Slope (m/day)", f"{slope:.6f}", delta=None)
-            
-            st.markdown("---")
-            
-            # ===== MULTIPLE ANALYSIS CHARTS =====
-            st.markdown("<h3>🎨 Prediction Visualizations</h3>", unsafe_allow_html=True)
-            
-            # Generate prediction data for all years
-            years = list(range(int(result['last_date'].year), int(target_year) + 1))
-            current = result['current_level']
-            rainfall_factor = result.get('rainfall_factor', 0)
-            
-            # Calculate predictions using the model
-            trend_values = []
-            for year in years:
-                year_date = datetime(year, 1, 1)
-                days_to_year = (year_date - result['last_date']).days
-                pred = result['model'].predict([[days_to_year]])[0]
-                pred_adjusted = pred * (1 + rainfall_factor * 0.1)
-                trend_values.append(pred_adjusted)
-            
-            change_vals = [v - current for v in trend_values]
+        with metric_cols[0]:
+            current_level = result['current_level']
+            st.metric("💧 Current Level", f"{current_level:.2f}m", delta=None)
+        
+        with metric_cols[1]:
+            predicted_level = result['predicted_level']
+            change = predicted_level - current_level
+            st.metric("🎯 Predicted Level", f"{predicted_level:.2f}m", delta=f"{change:.2f}m")
+        
+        with metric_cols[2]:
+            pct_change = (change / abs(current_level)) * 100 if current_level != 0 else 0
+            st.metric("📈 % Change", f"{pct_change:.2f}%", delta=None)
+        
+        with metric_cols[3]:
+            slope = result['slope']
+            st.metric("⚡ Slope (m/day)", f"{slope:.6f}", delta=None)
+        
+        st.markdown("---")
+        
+        # ===== MULTIPLE ANALYSIS CHARTS =====
+        st.markdown("<h3>🎨 Prediction Visualizations</h3>", unsafe_allow_html=True)
+        
+        # Generate prediction data for all years
+        years = list(range(int(result['last_date'].year), int(target_year) + 1))
+        current = result['current_level']
+        rainfall_factor = result.get('rainfall_factor', 0)
+        
+        # Calculate predictions using the model
+        trend_values = []
+        for year in years:
+            year_date = datetime(year, 1, 1)
+            days_to_year = (year_date - result['last_date']).days
+            pred = result['model'].predict([[days_to_year]])[0]
+            pred_adjusted = pred * (1 + rainfall_factor * 0.1)
+            trend_values.append(pred_adjusted)
+        
+        change_vals = [v - current for v in trend_values]
         
         # Chart 1: Trend Line with Markers
         col1, col2 = st.columns(2)
@@ -1013,7 +921,7 @@ elif st.session_state.current_page == "analysis":
                 ))
             
             # Projection
-            proj_dates = pd.date_range(result['last_date'], datetime(int(target_year), 1, 1), freq='YE')
+            proj_dates = pd.date_range(result['last_date'], datetime(int(target_year), 1, 1), freq='Y')
             proj_values = [current + result['slope'] * (d - result['last_date']).days / 1000 
                           for d in proj_dates]
             
@@ -1035,7 +943,7 @@ elif st.session_state.current_page == "analysis":
                 font=dict(color='#0a2540', size=11),
                 height=400
             )
-            st.plotly_chart(fig_historical, width='stretch')
+            st.plotly_chart(fig_historical, use_container_width=True)
         
         with col4:
             # Rainfall Impact Analysis
@@ -1239,6 +1147,10 @@ elif st.session_state.current_page == "analysis":
         
         for insight in insights:
             st.info(insight)
+        
+    else:
+        st.warning("⚠️ Generate a prediction first to see comprehensive analysis")
+        st.info("Go to 🎯 Prediction tab, set your parameters, and click Predict button")
 
 # CHATBOT PAGE
 elif st.session_state.current_page == "chatbot":
