@@ -425,55 +425,70 @@ def load_data():
 
 # ================= PREDICTION FUNCTION ================= #
 def predict_with_rainfall(lat, lon, district, target_year, rainfall_df):
-    """Predict water level with rainfall integration"""
+    """Predict water level with rainfall integration (SAFE VERSION)"""
+    
     df_long, _ = load_data()
     
     if df_long is None:
-        return None
+        return {"error": "Data not loaded"}
     
+    # Distance filtering
     distances = np.sqrt((df_long["LAT"] - lat)**2 + (df_long["LON"] - lon)**2)
     mask = distances < 1
     
     if not mask.any():
         return {"error": "No wells found within 1° radius"}
     
-    filtered_data = df_long[mask].copy()
-    filtered_data = filtered_data.sort_values("Date")
+    filtered_data = df_long[mask].copy().sort_values("Date")
     
     if len(filtered_data) < 5:
         return {"error": "Insufficient historical data"}
     
+    # Prepare regression
     X = (filtered_data["Date"] - filtered_data["Date"].min()).dt.days.values.reshape(-1, 1)
     y = filtered_data["Water_Level"].values
     
     if len(np.unique(X)) < 2:
-        return {"error": "Not enough data points"}
+        return {"error": "Not enough variation in data"}
     
     from sklearn.linear_model import LinearRegression
     model = LinearRegression()
     model.fit(X, y)
     
+    # Prediction
     last_date = filtered_data["Date"].max()
-    days_to_target = (datetime(int(target_year), 1, 1) - last_date).days
+    target_date = datetime(int(target_year), 1, 1)
+    days_to_target = (target_date - last_date).days
+    
     pred = model.predict([[days_to_target]])[0]
     
+    # ================= SAFE RAINFALL HANDLING ================= #
     rainfall_factor = 0
-    if district and rainfall_df is not None and "ANNUAL" in rainfall_df.columns:
-        district_rainfall = rainfall_df[rainfall_df["DISTRICT"] == district.upper()]
-        if not district_rainfall.empty:
-            annual_rainfall = district_rainfall["ANNUAL"].values[0]
-            rainfall_factor = (annual_rainfall - 800) / 800
+    annual_rainfall = "N/A"
     
+    if district and rainfall_df is not None:
+        try:
+            district_data = rainfall_df[
+                rainfall_df["DISTRICT"] == district.upper()
+            ]
+            
+            if not district_data.empty and "ANNUAL" in rainfall_df.columns:
+                annual_rainfall = float(district_data.iloc[0]["ANNUAL"])
+                rainfall_factor = (annual_rainfall - 800) / 800
+        except Exception as e:
+            logger.warning(f"Rainfall data issue: {e}")
+    
+    # Adjust prediction
     pred_adjusted = pred * (1 + rainfall_factor * 0.1)
     
     return {
-        "current_level": y[-1],
-        "predicted_level": pred_adjusted,
+        "current_level": float(y[-1]),
+        "predicted_level": float(pred_adjusted),
         "trend": "Rising ↗" if model.coef_[0] > 0 else "Declining ↘",
-        "slope": model.coef_[0],
+        "slope": float(model.coef_[0]),
         "last_date": last_date,
-        "rainfall_factor": rainfall_factor,
-        "annual_rainfall": rainfall_df[rainfall_df["DISTRICT"] == district.upper()]["ANNUAL"].values[0] if district and rainfall_df is not None else "N/A",
+        "rainfall_factor": float(rainfall_factor),
+        "annual_rainfall": annual_rainfall,
         "model": model,
         "filtered_data": filtered_data,
         "target_year": target_year
