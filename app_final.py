@@ -18,6 +18,27 @@ from streamlit_folium import st_folium
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ================= DIAGNOSTIC INFO ================= #
+# Check if files exist on startup
+@st.cache_data
+def check_environment():
+    """Check if required files exist"""
+    current_dir = os.getcwd()
+    gwb_exists = os.path.exists("CGWB_data_main_cleaned.csv")
+    rainfall_exists = os.path.exists("district wise rainfall normal.csv")
+    
+    return {
+        "current_dir": current_dir,
+        "gwb_exists": gwb_exists,
+        "rainfall_exists": rainfall_exists,
+        "all_files": os.listdir(current_dir) if current_dir else []
+    }
+
+env_check = check_environment()
+logger.info(f"Environment check: {env_check['current_dir']}")
+logger.info(f"Groundwater file exists: {env_check['gwb_exists']}")
+logger.info(f"Rainfall file exists: {env_check['rainfall_exists']}")
+
 # ================= PAGE CONFIG ================= #
 st.set_page_config(
     page_title="🌊 Groundwater Prediction System",
