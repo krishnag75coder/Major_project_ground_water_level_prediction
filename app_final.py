@@ -128,7 +128,7 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
 }
 
 .stSelectbox>div>div>div {
-    background: white !important;
+    background: #000000 !important;
 }
 
 /* MAIN CONTENT AREA */
